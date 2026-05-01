@@ -1,0 +1,36 @@
+# Build outputs
+train
+playback
+trace_gen
+gb_emu
+cfg_tool
+ir_tool
+trdiff
+test_cpu
+test_memory
+test_timer
+test_ir
+test_intro
+
+# JIT-generated (rebuilt by 'make traces')
+gpu/hot_traces.cuh
+
+# Training outputs
+*.bin
+*.profile
+*.trace
+*.json
+pics/
+
+# Profiling reports
+profiling/reports/
+
+# ROM (not distributed)
+*.gb
+*.gbc
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+*~
