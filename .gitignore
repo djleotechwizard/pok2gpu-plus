@@ -1,5 +1,5 @@
-# Build outputs
-train
+# Build outputs — binaries
+rl_train
 playback
 trace_gen
 gb_emu
@@ -11,6 +11,9 @@ test_memory
 test_timer
 test_ir
 test_intro
+
+# Compiled objects
+build/
 
 # JIT-generated (rebuilt by 'make traces')
 gpu/hot_traces.cuh
