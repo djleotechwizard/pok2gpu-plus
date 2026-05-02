@@ -3,15 +3,15 @@
 # =============================================================================
 #
 # Primary targets:
-#   make              — build train, playback, trace_gen
-#   make train        — GPU training binary
+#   make              — build rl_train, playback, trace_gen
+#   make rl_train     — GPU training binary
 #   make playback     — SDL2 visualizer
 #   make trace_gen    — JIT hot-trace compiler
 #   make tools        — gb_emu, cfg_tool, ir_tool, trdiff
 #   make tests        — build + run all CPU-side tests
 #   make bench        — throughput benchmark (requires ROM)
 #   make profile      — collect block-hit profile for JIT (requires ROM)
-#   make traces       — generate hot_traces.cuh from profile, rebuild train
+#   make traces       — generate hot_traces.cuh from profile, rebuild rl_train
 #   make nsys         — Nsight Systems timeline profile (requires ROM)
 #   make ncu          — Nsight Compute deep-dive profile (requires ROM)
 #   make clean        — remove all build artefacts
@@ -25,186 +25,190 @@
 # =============================================================================
 
 # ── Compilers ─────────────────────────────────────────────────────────────────
-CC      := gcc
-NVCC    := /usr/local/cuda/bin/nvcc
+CC   := gcc
+NVCC := /usr/local/cuda/bin/nvcc
 
-# ── Source roots ──────────────────────────────────────────────────────────────
-EMU_DIR      := emu
-ANALYSIS_DIR := analysis
-GPU_DIR      := gpu
-TRAIN_DIR    := train
-APPS_DIR     := apps
-TESTS_DIR    := tests
+# ── Build directory ───────────────────────────────────────────────────────────
+BUILD := build
 
-# ── Compiler flags ────────────────────────────────────────────────────────────
-SM          ?= 89
-ROM         ?= pokered.gb
-GENS        ?= 5
-AGENTS      ?= 2048
-NVTX        ?= 0
+# ── Variables ─────────────────────────────────────────────────────────────────
+SM     ?= 89
+ROM    ?= pokered.gb
+GENS   ?= 5
+AGENTS ?= 2048
+NVTX   ?= 0
+PROFILE_GENS ?= $(GENS)
 
-CFLAGS      := -std=c11 -Wall -Wextra -O2 -g \
-               -I$(EMU_DIR) -I$(ANALYSIS_DIR) -I$(TRAIN_DIR) \
-               -I$(GPU_DIR) -I.
+# ── Include paths ─────────────────────────────────────────────────────────────
+INCS := -Iemu -Ianalysis -Itrain -Igpu -I.
 
-CFLAGS_DBG  := -std=c11 -Wall -Wextra -O0 -g \
-               -I$(EMU_DIR) -I$(ANALYSIS_DIR) -I$(TRAIN_DIR) \
-               -I$(GPU_DIR) -I.
+# ── C flags (shared host code) ────────────────────────────────────────────────
+CFLAGS     := -std=c11 -Wall -Wextra -O2 -g $(INCS)
+CFLAGS_DBG := -std=c11 -Wall -Wextra -O0 -g $(INCS)
 
-# NVCC flags: O3, architecture-specific, lineinfo for ncu/nsys, PTX verbosity
-NVCC_FLAGS  := -O3 -arch=sm_$(SM) \
-               -Iemu -Ianalysis -Itrain -Igpu -I. \
-               -Xcompiler -std=c11,-Wall,-Wextra \
+# ── NVCC flags ────────────────────────────────────────────────────────────────
+# -dc: separate device compilation — each .cu produces a relocatable device obj.
+# The final link step (nvcc without -dc) merges device code and links the runtime.
+NVCC_COMMON := -arch=sm_$(SM) $(INCS) \
                -Xptxas=-v,-warn-lmem-usage \
                -diag-suppress 177 \
                -lineinfo
 
+NVCC_COMPILE := $(NVCC_COMMON) -O3 -dc \
+                -Xcompiler -std=c11,-Wall,-Wextra
+
+NVCC_LINK    := $(NVCC_COMMON) -O3
+
 ifeq ($(NVTX),1)
-  NVCC_FLAGS += -DPOKE_NVTX
-  NVTX_LIBS  := -lnvToolsExt
+  NVCC_COMPILE += -DPOKE_NVTX
+  NVTX_LIBS    := -lnvToolsExt
 else
-  NVTX_LIBS  :=
+  NVTX_LIBS    :=
 endif
 
+# ── SDL2 ──────────────────────────────────────────────────────────────────────
 SDL2_CFLAGS := $(shell pkg-config --cflags sdl2 2>/dev/null || echo "")
 SDL2_LIBS   := $(shell pkg-config --libs   sdl2 2>/dev/null || echo "-lSDL2")
 
-# ── Source file lists ─────────────────────────────────────────────────────────
+# ── Source → object mappings ──────────────────────────────────────────────────
 EMU_SRCS := \
-    $(EMU_DIR)/gb.c      \
-    $(EMU_DIR)/cpu.c     \
-    $(EMU_DIR)/memory.c  \
-    $(EMU_DIR)/ppu.c     \
-    $(EMU_DIR)/timer.c   \
-    $(EMU_DIR)/trace.c
+    emu/gb.c      \
+    emu/cpu.c     \
+    emu/memory.c  \
+    emu/ppu.c     \
+    emu/timer.c   \
+    emu/trace.c
 
 ANALYSIS_SRCS := \
-    $(ANALYSIS_DIR)/disasm.c    \
-    $(ANALYSIS_DIR)/cfg.c       \
-    $(ANALYSIS_DIR)/ir_lift.c   \
-    $(ANALYSIS_DIR)/ir_interp.c
+    analysis/disasm.c    \
+    analysis/cfg.c       \
+    analysis/ir_lift.c   \
+    analysis/ir_interp.c
 
-TRAIN_SRCS := \
-    $(TRAIN_DIR)/batch.c
+TRAIN_SRCS := train/batch.c
 
-GPU_SRCS := $(GPU_DIR)/batch.cu
+GPU_SRCS := gpu/batch.cu
+
+# Host objects (compiled with gcc)
+EMU_OBJS      := $(patsubst %.c,$(BUILD)/%.o,$(EMU_SRCS))
+ANALYSIS_OBJS := $(patsubst %.c,$(BUILD)/%.o,$(ANALYSIS_SRCS))
+TRAIN_OBJS    := $(patsubst %.c,$(BUILD)/%.o,$(TRAIN_SRCS))
+
+# Device object (compiled with nvcc -dc)
+GPU_OBJ       := $(patsubst %.cu,$(BUILD)/%.o,$(GPU_SRCS))
+
+# Training entry-point object
+TRAIN_MAIN_OBJ := $(BUILD)/train/train.o
 
 # ── Phony targets ─────────────────────────────────────────────────────────────
-.PHONY: all train playback trace_gen tools \
+.PHONY: all rl_train playback trace_gen tools \
         tests test_cpu test_memory test_timer test_ir test_intro \
         bench profile traces nsys ncu clean
 
-# ── Default target ────────────────────────────────────────────────────────────
-all: train playback trace_gen
+# ── Default ───────────────────────────────────────────────────────────────────
+all: rl_train playback trace_gen
 
-# ── train ─────────────────────────────────────────────────────────────────────
-# NVCC compiles everything (C + CUDA) in a single invocation so the linker
-# sees both the CUDA runtime and the standard C objects.
-train: $(TRAIN_DIR)/train.c \
-       $(EMU_SRCS) $(ANALYSIS_SRCS) $(TRAIN_SRCS) $(GPU_SRCS) \
-       $(EMU_DIR)/gb.h $(TRAIN_DIR)/batch.h $(GPU_DIR)/batch.h \
-       $(GPU_DIR)/rl.h $(GPU_DIR)/hot_traces.cuh $(GPU_DIR)/perf.cuh
-	$(NVCC) $(NVCC_FLAGS) -o $@ \
-	    $(TRAIN_DIR)/train.c \
-	    $(EMU_SRCS) $(ANALYSIS_SRCS) $(TRAIN_SRCS) $(GPU_SRCS) \
-	    -lm $(NVTX_LIBS)
+# ── Directory creation ────────────────────────────────────────────────────────
+$(BUILD)/emu $(BUILD)/analysis $(BUILD)/train $(BUILD)/gpu:
+	mkdir -p $@
+
+# ── Pattern rules: C → .o ─────────────────────────────────────────────────────
+$(BUILD)/emu/%.o: emu/%.c | $(BUILD)/emu
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/analysis/%.o: analysis/%.c | $(BUILD)/analysis
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/train/%.o: train/%.c | $(BUILD)/train
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# ── CUDA device object ────────────────────────────────────────────────────────
+$(GPU_OBJ): gpu/batch.cu gpu/batch.h gpu/rl.h gpu/perf.cuh gpu/hot_traces.cuh \
+            analysis/ir.h analysis/cfg.h emu/gb.h | $(BUILD)/gpu
+	$(NVCC) $(NVCC_COMPILE) -c $< -o $@
+
+# ── rl_train ──────────────────────────────────────────────────────────────────
+# nvcc links the final binary so it can inject the CUDA device-link step.
+rl_train: $(TRAIN_MAIN_OBJ) $(EMU_OBJS) $(ANALYSIS_OBJS) $(TRAIN_OBJS) $(GPU_OBJ)
+	$(NVCC) $(NVCC_LINK) -o $@ $^ -lm $(NVTX_LIBS)
 
 # ── playback ──────────────────────────────────────────────────────────────────
-playback: $(APPS_DIR)/playback.c $(EMU_SRCS) \
-          $(EMU_DIR)/gb.h $(GPU_DIR)/rl.h
-	$(CC) $(CFLAGS) $(SDL2_CFLAGS) -o $@ \
-	    $(APPS_DIR)/playback.c $(EMU_SRCS) \
-	    $(SDL2_LIBS)
+playback: apps/playback.c $(EMU_OBJS) emu/gb.h gpu/rl.h
+	$(CC) $(CFLAGS) $(SDL2_CFLAGS) -o $@ apps/playback.c $(EMU_OBJS) $(SDL2_LIBS)
 
 # ── trace_gen ─────────────────────────────────────────────────────────────────
-trace_gen: $(APPS_DIR)/trace_gen.c \
-           $(ANALYSIS_DIR)/disasm.c $(ANALYSIS_DIR)/cfg.c \
-           $(ANALYSIS_DIR)/ir_lift.c
-	$(CC) $(CFLAGS) -o $@ \
-	    $(APPS_DIR)/trace_gen.c \
-	    $(ANALYSIS_DIR)/disasm.c $(ANALYSIS_DIR)/cfg.c \
-	    $(ANALYSIS_DIR)/ir_lift.c
+trace_gen: apps/trace_gen.c \
+           $(BUILD)/analysis/disasm.o $(BUILD)/analysis/cfg.o \
+           $(BUILD)/analysis/ir_lift.o
+	$(CC) $(CFLAGS) -o $@ apps/trace_gen.c \
+	    $(BUILD)/analysis/disasm.o $(BUILD)/analysis/cfg.o \
+	    $(BUILD)/analysis/ir_lift.o
 
-# ── debug/analysis tools ──────────────────────────────────────────────────────
+# ── tools ─────────────────────────────────────────────────────────────────────
 tools: gb_emu cfg_tool ir_tool trdiff
 
-gb_emu: $(APPS_DIR)/gb_emu.c $(EMU_SRCS)
-	$(CC) $(CFLAGS_DBG) -o $@ $(APPS_DIR)/gb_emu.c $(EMU_SRCS)
+gb_emu: apps/gb_emu.c $(EMU_SRCS)
+	$(CC) $(CFLAGS_DBG) -o $@ apps/gb_emu.c $(EMU_SRCS)
 
-cfg_tool: $(APPS_DIR)/cfg_tool.c \
-          $(ANALYSIS_DIR)/cfg.c $(ANALYSIS_DIR)/disasm.c
-	$(CC) $(CFLAGS_DBG) -o $@ \
-	    $(APPS_DIR)/cfg_tool.c \
-	    $(ANALYSIS_DIR)/cfg.c $(ANALYSIS_DIR)/disasm.c
+cfg_tool: apps/cfg_tool.c analysis/cfg.c analysis/disasm.c
+	$(CC) $(CFLAGS_DBG) -o $@ apps/cfg_tool.c analysis/cfg.c analysis/disasm.c
 
-ir_tool: $(APPS_DIR)/ir_tool.c \
-         $(ANALYSIS_DIR)/cfg.c $(ANALYSIS_DIR)/disasm.c \
-         $(ANALYSIS_DIR)/ir_lift.c
-	$(CC) $(CFLAGS_DBG) -o $@ \
-	    $(APPS_DIR)/ir_tool.c \
-	    $(ANALYSIS_DIR)/cfg.c $(ANALYSIS_DIR)/disasm.c \
-	    $(ANALYSIS_DIR)/ir_lift.c
+ir_tool: apps/ir_tool.c analysis/cfg.c analysis/disasm.c analysis/ir_lift.c
+	$(CC) $(CFLAGS_DBG) -o $@ apps/ir_tool.c \
+	    analysis/cfg.c analysis/disasm.c analysis/ir_lift.c
 
-trdiff: $(APPS_DIR)/trdiff.c
-	$(CC) -std=c11 -Wall -Wextra -O2 -o $@ $(APPS_DIR)/trdiff.c
+trdiff: apps/trdiff.c
+	$(CC) -std=c11 -Wall -Wextra -O2 -o $@ apps/trdiff.c
 
 # ── tests ─────────────────────────────────────────────────────────────────────
-# Each test is a self-contained binary; 'make tests' builds and runs them all.
 tests: test_cpu test_memory test_timer test_ir
 
-test_cpu: $(TESTS_DIR)/test_cpu.c $(EMU_SRCS)
-	$(CC) $(CFLAGS_DBG) -o $@ $(TESTS_DIR)/test_cpu.c $(EMU_SRCS)
+test_cpu: tests/test_cpu.c $(EMU_SRCS)
+	$(CC) $(CFLAGS_DBG) -o $@ tests/test_cpu.c $(EMU_SRCS)
 	@echo "--- test_cpu ---"; ./$@ || (echo "FAILED: test_cpu"; exit 1)
 
-test_memory: $(TESTS_DIR)/test_memory.c $(EMU_SRCS)
-	$(CC) $(CFLAGS_DBG) -o $@ $(TESTS_DIR)/test_memory.c $(EMU_SRCS)
+test_memory: tests/test_memory.c $(EMU_SRCS)
+	$(CC) $(CFLAGS_DBG) -o $@ tests/test_memory.c $(EMU_SRCS)
 	@echo "--- test_memory ---"; ./$@ || (echo "FAILED: test_memory"; exit 1)
 
-test_timer: $(TESTS_DIR)/test_timer.c $(EMU_SRCS)
-	$(CC) $(CFLAGS_DBG) -o $@ $(TESTS_DIR)/test_timer.c $(EMU_SRCS)
+test_timer: tests/test_timer.c $(EMU_SRCS)
+	$(CC) $(CFLAGS_DBG) -o $@ tests/test_timer.c $(EMU_SRCS)
 	@echo "--- test_timer ---"; ./$@ || (echo "FAILED: test_timer"; exit 1)
 
-test_ir: $(TESTS_DIR)/test_ir.c \
-         $(EMU_SRCS) $(ANALYSIS_SRCS)
-	$(CC) $(CFLAGS_DBG) -o $@ \
-	    $(TESTS_DIR)/test_ir.c \
-	    $(EMU_SRCS) $(ANALYSIS_SRCS)
+test_ir: tests/test_ir.c $(EMU_SRCS) $(ANALYSIS_SRCS)
+	$(CC) $(CFLAGS_DBG) -o $@ tests/test_ir.c $(EMU_SRCS) $(ANALYSIS_SRCS)
 	@echo "--- test_ir ---"; ./$@ || (echo "FAILED: test_ir"; exit 1)
 
-# Requires ROM — skip if not present
-test_intro: $(TESTS_DIR)/test_intro.c $(EMU_SRCS)
-	$(CC) $(CFLAGS_DBG) -o $@ $(TESTS_DIR)/test_intro.c $(EMU_SRCS)
+test_intro: tests/test_intro.c $(EMU_SRCS)
+	$(CC) $(CFLAGS_DBG) -o $@ tests/test_intro.c $(EMU_SRCS)
 	@echo "--- test_intro (ROM=$(ROM)) ---"; ROM=$(ROM) ./$@
 
 # ── JIT hot-trace workflow ────────────────────────────────────────────────────
-PROFILE_GENS ?= $(GENS)
-
-# Step 1: run PROFILE_GENS generations and write best_seq.bin.profile
-profile: train
-	./train -P $(PROFILE_GENS) -o best_seq.bin $(ROM)
+profile: rl_train
+	./rl_train -P $(PROFILE_GENS) -o best_seq.bin $(ROM)
 	@echo ""
 	@echo "Next: run 'make traces ROM=$(ROM)' to generate JIT hot-traces."
 
-# Step 2: compile profile → gpu/hot_traces.cuh, then rebuild train
 traces: trace_gen
 	./trace_gen best_seq.bin.profile $(ROM)
-	$(MAKE) train
+	$(MAKE) $(GPU_OBJ) rl_train
 	@echo ""
 	@echo "JIT traces active. Re-run 'make bench' to measure the speedup."
 
 # ── Profiling helpers ─────────────────────────────────────────────────────────
-bench: train
+bench: rl_train
 	ROM=$(ROM) GENS=$(GENS) AGENTS=$(AGENTS) ./profiling/benchmark.sh
 
-nsys: train
+nsys: rl_train
 	ROM=$(ROM) GENS=$(GENS) AGENTS=$(AGENTS) ./profiling/nsys.sh
 
-ncu: train
+ncu: rl_train
 	ROM=$(ROM) ./profiling/ncu.sh
 
 # ── Clean ─────────────────────────────────────────────────────────────────────
 clean:
-	rm -f train playback trace_gen \
+	rm -rf $(BUILD)/
+	rm -f rl_train playback trace_gen \
 	      gb_emu cfg_tool ir_tool trdiff \
 	      test_cpu test_memory test_timer test_ir test_intro \
 	      *.trace *.json *.bin *.profile

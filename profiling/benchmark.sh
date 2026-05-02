@@ -12,7 +12,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-TRAIN="$REPO_ROOT/train"
+TRAIN="$REPO_ROOT/rl_train"
 
 if [[ ! -f "$TRAIN" ]]; then
   echo "ERROR: '$TRAIN' not found. Run 'make train' first."

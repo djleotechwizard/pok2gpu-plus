@@ -844,7 +844,7 @@ done:
 
 /* Dispatcher — selects the right template instantiation so the
  * compiler allocates only as many stack slots as the block needs. */
-__device__ static int gpu_exec_block(
+__device__ __noinline__ static int gpu_exec_block(
     GBStateGPU    *s,
     uint8_t       *vram,
     uint8_t       *wram,
