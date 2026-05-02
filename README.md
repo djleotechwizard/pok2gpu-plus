@@ -183,26 +183,15 @@ diff before.txt after.txt
 ```bash
 make nsys ROM=pokered.gb
 # output: profiling/reports/nsys_<timestamp>.nsys-rep
-# open in Nsight Systems GUI
+# open in Nsight Systems GUI - not tested
 ```
 
 ### Nsight Compute (kernel metrics)
 
 ```bash
-# May require elevated permissions on Linux — see note below
+# May require elevated permissions on Linux — not tested
 make ncu ROM=pokered.gb
 # output: profiling/reports/ncu_<timestamp>.ncu-rep
-```
-
-**Linux permissions for hardware counters:**
-
-```bash
-# Temporary (until reboot):
-echo 0 | sudo tee /proc/sys/kernel/perf_event_paranoid
-
-# Persistent:
-echo 'kernel.perf_event_paranoid=0' | sudo tee /etc/sysctl.d/99-perf.conf
-sudo sysctl -p /etc/sysctl.d/99-perf.conf
 ```
 
 ---
@@ -293,29 +282,6 @@ pok2gpu-plus/
 # Compare two execution traces to find the first divergence
 ./trdiff ref.trace test.trace
 ```
-
----
-
-## Reproducing the optimisations
-
-Two key GPU optimisations are already applied and documented in the source:
-
-**1. `__noinline__` on `gpu_exec_block`** (`gpu/batch.cu`)  
-The IR block executor was being inlined into the episode kernel, contributing
-528 bytes of local memory per thread and polluting the L1 cache.  Marking it
-`__noinline__` drops the kernel frame to 32 bytes, freeing L1 for WRAM reads
-and hash-table lookups.  Result: +10% throughput.
-
-**2. Dead flag elimination** (`analysis/ir_lift.c`)  
-The IR lifter eagerly emits Z/N/H/C flag updates after every ALU instruction.
-In compute-heavy blocks (e.g. the OAM sprite-position loop that accounts for
-~10% of all executions) most of these updates are immediately overwritten
-before any branch reads them.  A backward liveness pass at IR compile time
-converts dead flag writes to IR_NOP and compacts them out, reducing IR op
-count by ~49% for the hottest blocks.  Result: +14% throughput.
-
-Combined: **+25% throughput** over the starting baseline (71k → 89k sf/s on
-RTX 40-series at 2048 agents).
 
 ---
 
