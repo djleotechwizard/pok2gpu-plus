@@ -56,11 +56,11 @@ make tools      # gb_emu, cfg_tool, ir_tool, trdiff  (optional)
 # 2. Run the test suite
 make tests
 
-# 3. Train — 500 generations, 2048 agents, 600 frames/episode
+# 3. Train — 10 generations, 2048 agents, 600 frames/episode
 ./rl_train pokered.gb
 
-# 4. Watch the best sequence
-./playback pokered.gb best_seq.bin
+# 4. Watch the best sequence (skip intro, 4× speed, play once)
+./playback pokered.gb best_seq.bin -k -x 4 -l 1
 ```
 
 ---
@@ -71,7 +71,7 @@ make tests
 ./rl_train [options] <rom.gb>
 
   -n N    Parallel agents          (default 2048)
-  -g G    Generations              (default 500)
+  -g G    Generations              (default 10)
   -f F    GB frames per episode    (default 600)
   -r R    Action repeat in frames  (default 8 — one tile per step)
   -w W    Scripted intro frames    (default 3600; 0 = skip intro)
@@ -84,22 +84,22 @@ make tests
   -h      Help
 ```
 
-### Example: long training run
+### Example: serious training run
 
 ```bash
-./rl_train -n 2048 -g 1000 -f 1800 -r 8 pokered.gb
+./rl_train -n 2048 -g 500 -f 1800 -r 8 pokered.gb
 ```
 
-### Example: quick experiment
+### Example: quick experiment (default)
 
 ```bash
-./rl_train -n 2048 -g 50 -f 600 pokered.gb
+./rl_train -n 2048 -g 10 -f 600 pokered.gb
 ```
 
 ### Live progress output
 
 ```
-gen   42/500  max= 87  mean=61.3  p75= 73  p25= 51  min= 12  ep=12.4s  91k sf/s  mut=0.05  elapsed=9m  eta=1h12m
+gen   7/10  max= 87  mean=61.3  p75= 73  p25= 51  min= 12  ep=12.4s  91k sf/s  mut=0.05  elapsed=9m  eta=2m
 ```
 
 - **max/mean/p75/p25/min** — tile-count distribution across agents
